@@ -1,17 +1,21 @@
 
 
+use std::sync::Arc;
+
 use serde::{Deserialize, Serialize};
-use tokio::time::Instant;
+use tokio::{net::TcpStream, sync::Mutex, time::Instant};
 
 pub struct Peer {
     pub id: u64,
     pub addr: String,
+    pub conn: Option<TcpStream>
 }
 pub struct Node {
     pub id: u64,
     pub peers: Vec<Peer>
 }
 
+#[derive(PartialEq)]
 pub enum Role {
     Leader,
     Follower,
