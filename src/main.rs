@@ -4,7 +4,7 @@ use bytes::{Bytes, BytesMut};
 use rand::RngExt;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}, sync::Mutex, time::{Instant, sleep}};
 
-use crate::{connection::connect, distributed::request_reader, types::{Peer, Role::{self, Candidate, Follower}, Rpc, ThisNode}};
+use crate::{connection::{connect_to_peers, handle_connection}, distributed::request_reader, types::{Peer, Role::{self, Candidate, Follower}, Rpc, ThisNode}};
 
 
 pub mod types;
@@ -13,11 +13,6 @@ pub mod connection;
 
 #[tokio::main]
 async fn main() {
-    let listener = TcpListener::bind("127.0.0.1:7002").await.unwrap();
-    let (socket, a) = listener.accept().await.unwrap();
-    
-    let stream = Arc::new(Mutex::new(socket));
-
     let heartbeat = Arc::new(Mutex::new(Instant::now()));
 
     let peers = vec![
@@ -37,11 +32,19 @@ async fn main() {
     }));
     let node = me.clone();
 
-    connect(me.clone()).await;
+
+    let listener = TcpListener::bind("127.0.0.1:7002").await.unwrap();
     
-    
+    tokio::spawn(handle_connection(listener, me.clone(), heartbeat.clone()));
+
+    let connector = tokio::spawn(connect_to_peers(me.clone()));
+
+    connector.await.unwrap();
+
+    println!("Finished Setup");
+
     let watchdog = tokio::spawn(workdogfn(heartbeat.clone(), me.clone()));
-    let vote_reader = tokio::spawn(request_reader(stream.clone(), me.clone(), heartbeat.clone()));
+    
 
     let heartbeat = tokio::spawn(async move {
         loop {
@@ -50,7 +53,7 @@ async fn main() {
         }
     });
 
-    let _ = tokio::join!(watchdog, vote_reader, heartbeat);
+    let _ = tokio::join!(watchdog, heartbeat);
 }
 
 
@@ -81,7 +84,7 @@ async fn workdogfn(heartbeat_guard: Arc<Mutex<Instant>>, me: Arc<Mutex<ThisNode>
                 let mut rng = rand::rng();
                 x = rng.random_range(1..5);
             }
-            sleep(Duration::from_secs(x)).await;
+            sleep(Duration::from_secs(1)).await;
             if Instant::now().duration_since(*heartbeat) < Duration::from_secs(5) {
                 continue;
             }
@@ -92,17 +95,18 @@ async fn workdogfn(heartbeat_guard: Arc<Mutex<Instant>>, me: Arc<Mutex<ThisNode>
 }
 
 pub async fn election(me: Arc<Mutex<ThisNode>>) {
+    println!("Starting election");
     let mut buf = BytesMut::new();
     let mut me_guard = me.lock().await;
     me_guard.current_term += 1;
     me_guard.role = Candidate;
     let mut total_votes = 1;
-    let vote = Rpc::RequestVote { term: me_guard.current_term, candidate_id: me_guard.id };
+    let vote = Rpc::RequestVote{term:me_guard.current_term,candidate_id:me_guard.id};
     for i in me_guard.peers.iter() {
         if i.id == me_guard.id || i.id == me_guard.current_leader {
             continue;
         }
-        send_request(&i.addr, vote.clone(), &mut buf).await;
+        send_request(&i.addr, &vote, &mut buf).await;
         check_vote(&mut buf, &mut total_votes).await;
         if total_votes >= 2 {
             break;
@@ -111,10 +115,13 @@ pub async fn election(me: Arc<Mutex<ThisNode>>) {
     me_guard.role = Role::Leader;
 }
 
-pub async fn send_request(address: &String, vote: Rpc, buf: &mut BytesMut) {
+pub async fn send_request(address: &String, vote: &Rpc, buf: &mut BytesMut) {
     let mut connection = TcpStream::connect(address).await.unwrap();
-    let bytes = serde_json::to_vec(&vote).unwrap();
+    let mut bytes = serde_json::to_vec(vote).unwrap();
+    bytes.push(b'\n');
+    println!("{}", String::from_utf8(bytes.to_vec()).unwrap());
     let _ = connection.write_all(&bytes).await;
+    println!("Wrote to {}", address);
     loop {
         let _ = connection.read(buf).await;
         if let Some(_) = buf.iter().position(|x| *x == b'n') {

@@ -1,10 +1,10 @@
-use std::sync::Arc;
+use std::{sync::Arc,time::Duration};
 
-use tokio::{net::TcpStream, sync::Mutex};
+use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::Mutex, time::{Instant, sleep}};
 
-use crate::types::ThisNode;
+use crate::{distributed::request_reader, types::ThisNode};
 
-pub async fn connect(me: Arc<Mutex<ThisNode>>) {
+pub async fn connect_to_peers(me: Arc<Mutex<ThisNode>>) {
     let mut node = me.lock().await;
     let id = node.id.clone();
     println!("Reached here");
@@ -12,15 +12,27 @@ pub async fn connect(me: Arc<Mutex<ThisNode>>) {
         if i.id == id {
             continue;
         };
+        println!("Trying {}", i.addr);
         loop {
             match TcpStream::connect(&i.addr).await {
                 Ok(stream) => {
                     i.conn = Some(stream);
-                    print!("Connected {}", i.id);
+                    println!("Connected {}", i.id);
                     break;
                 }
-                Err(_) => {continue;}
+                Err(a) => {
+                    sleep(Duration::from_secs(2)).await;
+                    continue;
+                }
             }
         }
+    }
+}
+
+pub async fn handle_connection(listener: TcpListener, me: Arc<Mutex<ThisNode>>, heartbeat: Arc<Mutex<Instant>>) {
+    loop{
+        let (socket, a) = listener.accept().await.unwrap();
+        println!("{}",a);
+        tokio::spawn(request_reader(socket, me.clone(), heartbeat.clone()));
     }
 }
