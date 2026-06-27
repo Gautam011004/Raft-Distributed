@@ -100,17 +100,25 @@ pub async fn send_heartbeat(me: Arc<Mutex<ThisNode>>) {
 
 async fn workdogfn(heartbeat_guard: Arc<Mutex<Instant>>, me: Arc<Mutex<ThisNode>>) {
     let mut x;
+    let mut beat: Instant;
     loop {
         sleep(Duration::from_secs(1)).await;
-        let heartbeat = heartbeat_guard.lock().await;
-        if Instant::now().duration_since(*heartbeat) > Duration::from_secs(5) {
+        {
+            let heartbeat = heartbeat_guard.lock().await;
+            beat = *heartbeat;
+        }
+        if Instant::now().duration_since(beat) > Duration::from_secs(5) {
             println!("Leader died");
             {
                 let mut rng = rand::rng();
                 x = rng.random_range(1..5);
             }
             sleep(Duration::from_secs(1)).await;
-            if Instant::now().duration_since(*heartbeat) < Duration::from_secs(5) {
+            {
+                let heartbeat = heartbeat_guard.lock().await;
+                beat = *heartbeat;
+            }
+            if Instant::now().duration_since(beat) < Duration::from_secs(5) {
                 continue;
             }
             election(me).await;
