@@ -64,7 +64,6 @@ async fn main() {
 
     connector.await.unwrap();
 
-    println!("Finished Setup");
 
     let watchdog = tokio::spawn(workdogfn(heartbeat.clone(), me.clone()));
 
@@ -92,8 +91,8 @@ pub async fn send_heartbeat(me: Arc<Mutex<ThisNode>>) {
             if i.id == leader_id {
                 continue;
             }
-            println!("Writin to {}", i.addr);
-            let _ = i.conn.as_mut().unwrap().write_all(&bytes).await;
+            println!("Writin to {}, - {:?}", i.addr, String::from_utf8(bytes.to_vec()).unwrap());
+            let n = i.conn.as_mut().unwrap().write_all(&bytes).await.unwrap();
             sleep(Duration::from_secs(1)).await;
         }
     }
