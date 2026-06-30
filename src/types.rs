@@ -1,9 +1,5 @@
-
-
-use std::sync::Arc;
-
 use serde::{Deserialize, Serialize};
-use tokio::{net::TcpStream, sync::Mutex, time::Instant};
+use tokio::{net::TcpStream, time::Instant};
 
 pub struct Peer {
     pub id: u64,
@@ -29,7 +25,7 @@ pub struct ThisNode {
     pub peers: Vec<Peer>,
     pub last_heartbeat: Instant,
     pub voted_for: Option<u64>,
-    pub current_leader: u64
+    pub current_leader: Option<u64>
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -45,5 +41,8 @@ pub enum Rpc {
     VoteResponse {
         term: u64,
         granted: bool
+    },
+    LeaderAnnounce {
+        leader_id: u64
     }
 }

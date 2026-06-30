@@ -1,20 +1,16 @@
-use std::{clone, ptr::read, sync::Arc, time::Duration};
-
-use bytes::{Bytes, BytesMut};
+use std::{sync::Arc, time::Duration};
 use rand::RngExt;
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
-    net::{TcpListener, TcpStream},
+    io::{AsyncWriteExt},
+    net::{TcpListener},
     sync::Mutex,
     time::{Instant, sleep},
 };
 
 use crate::{
-    connection::{connect_to_peers, handle_connection},
-    distributed::request_reader,
-    types::{
+    connection::{connect_to_peers, handle_connection, retry_conn}, election::election, types::{
         Peer,
-        Role::{self, Candidate, Follower},
+        Role::{self, Follower},
         Rpc, ThisNode,
     },
 };
@@ -22,6 +18,7 @@ use crate::{
 pub mod connection;
 pub mod distributed;
 pub mod types;
+pub mod election;
 
 #[tokio::main]
 async fn main() {
@@ -29,17 +26,17 @@ async fn main() {
 
     let peers = vec![
         Peer {
-            id: 1,
+            id: 0,
             addr: "127.0.0.1:7000".into(),
             conn: None,
         },
         Peer {
-            id: 2,
+            id: 1,
             addr: "127.0.0.1:7001".into(),
             conn: None,
         },
         Peer {
-            id: 3,
+            id: 2,
             addr: "127.0.0.1:7002".into(),
             conn: None,
         },
@@ -52,7 +49,7 @@ async fn main() {
         peers: peers,
         last_heartbeat: Instant::now(),
         voted_for: Some(3),
-        current_leader: 0,
+        current_leader: None,
     }));
     let node = me.clone();
 
@@ -74,6 +71,15 @@ async fn main() {
         }
     });
 
+    let retry_node = me.clone();
+
+    tokio::spawn(async move {
+        loop {
+            retry_conn(retry_node.clone()).await;
+            sleep(Duration::from_secs(2)).await;
+        }
+    });
+
     let _ = tokio::join!(watchdog, heartbeat);
 }
 
@@ -88,11 +94,11 @@ pub async fn send_heartbeat(me: Arc<Mutex<ThisNode>>) {
     bytes.push(b'\n');
     if node.role == Role::Leader {
         for i in node.peers.iter_mut() {
-            if i.id == leader_id {
+            if i.id == leader_id || i.conn.is_none() {
                 continue;
             }
             println!("Writin to {}, - {:?}", i.addr, String::from_utf8(bytes.to_vec()).unwrap());
-            let n = i.conn.as_mut().unwrap().write_all(&bytes).await.unwrap();
+            let _ = i.conn.as_mut().unwrap().write_all(&bytes).await.unwrap();
             sleep(Duration::from_secs(1)).await;
         }
     }
@@ -113,7 +119,7 @@ async fn workdogfn(heartbeat_guard: Arc<Mutex<Instant>>, me: Arc<Mutex<ThisNode>
                 let mut rng = rand::rng();
                 x = rng.random_range(1..5);
             }
-            sleep(Duration::from_secs(1)).await;
+            sleep(Duration::from_secs(10)).await;
             {
                 let heartbeat = heartbeat_guard.lock().await;
                 beat = *heartbeat;
@@ -121,62 +127,15 @@ async fn workdogfn(heartbeat_guard: Arc<Mutex<Instant>>, me: Arc<Mutex<ThisNode>
             if Instant::now().duration_since(beat) < Duration::from_secs(5) {
                 continue;
             }
+            {
+                let mut node = me.lock().await;
+                if let Some(s) = node.current_leader {
+                    let leader = node.peers.get_mut(s as usize).unwrap();
+                    leader.conn = None;
+                }
+            }
             election(me).await;
             break;
         }
-    }
-}
-
-pub async fn election(me: Arc<Mutex<ThisNode>>) {
-    println!("Starting election");
-    let mut buf = BytesMut::new();
-    let mut me_guard = me.lock().await;
-    me_guard.current_term += 1;
-    me_guard.role = Candidate;
-    let mut total_votes = 0;
-    let vote = Rpc::RequestVote {
-        term: me_guard.current_term,
-        candidate_id: me_guard.id,
-    };
-    for i in me_guard.peers.iter() {
-        if i.id == me_guard.id || i.id == me_guard.current_leader {
-            continue;
-        }
-        send_request(&i.addr, &vote, &mut buf).await;
-        check_vote(&mut buf, &mut total_votes).await;
-        println!("{}", total_votes);
-        if total_votes >= 2 {
-            break;
-        }
-    }
-    me_guard.role = Role::Leader;
-}
-
-pub async fn send_request(address: &String, vote: &Rpc, buf: &mut BytesMut) {
-    let mut connection = TcpStream::connect(address).await.unwrap();
-    let mut bytes = serde_json::to_vec(vote).unwrap();
-    bytes.push(b'\n');
-    println!("{}", String::from_utf8(bytes.to_vec()).unwrap());
-    let _ = connection.write_all(&bytes).await;
-    println!("Wrote to {}", address);
-    loop {
-        let _ = connection.read_buf(buf).await;
-        if let Some(_) = buf.iter().position(|x| *x == b'\n') {
-            return;
-        }
-    }
-}
-
-pub async fn check_vote(buf: &mut BytesMut, total_votes: &mut u64) {
-    let bytes = buf.split();
-    println!("{}", String::from_utf8(bytes.to_vec()).unwrap());
-    let vote: Rpc = serde_json::from_slice(&bytes).unwrap();
-    match vote {
-        Rpc::VoteResponse { term, granted } => {
-            if granted == true {
-                *total_votes += 1
-            }
-        }
-        _ => {}
     }
 }

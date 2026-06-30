@@ -1,6 +1,6 @@
 use std::{sync::Arc,time::Duration};
 
-use tokio::{io::AsyncWriteExt, net::{TcpListener, TcpStream}, sync::Mutex, time::{Instant, sleep}};
+use tokio::{net::{TcpListener, TcpStream}, sync::Mutex, time::{Instant, sleep}};
 
 use crate::{distributed::request_reader, types::ThisNode};
 
@@ -22,6 +22,16 @@ pub async fn connect_to_peers(me: Arc<Mutex<ThisNode>>) {
                     continue;
                 }
             }
+        }
+    }
+}
+
+pub async fn retry_conn(me: Arc<Mutex<ThisNode>>) {
+    let mut node = me.lock().await;
+    for i in node.peers.iter_mut() {
+        if i.conn.is_none() {
+            let conn = TcpStream::connect(&i.addr).await.unwrap();
+            i.conn = Some(conn);
         }
     }
 }

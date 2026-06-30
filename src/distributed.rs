@@ -1,14 +1,14 @@
-use std::{sync::Arc, time::Duration};
+use std::{sync::Arc};
 
 use bytes::BytesMut;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,
     sync::Mutex,
-    time::{Instant, sleep},
+    time::{Instant},
 };
 
-use crate::types::{Role, Rpc, ThisNode};
+use crate::types::{Rpc, ThisNode};
 
 pub async fn request_reader(
     mut conn: TcpStream,
@@ -36,9 +36,8 @@ pub async fn vote_caster(
     pos: usize,
     me: Arc<Mutex<ThisNode>>,
     heartbeat_guard: Arc<Mutex<Instant>>,
-    stream: &mut TcpStream
+    stream: &mut TcpStream,
 ) {
-    let node = me.lock().await;
     let bytes = buf.split_to(pos + 1);
     println!("{}", String::from_utf8(bytes.to_vec()).unwrap());
     let msg: Rpc = serde_json::from_slice(&bytes).unwrap();
@@ -55,6 +54,10 @@ pub async fn vote_caster(
         Rpc::Hearbeat { term, leader_id } => {
             let mut heartbeat = heartbeat_guard.lock().await;
             *heartbeat = Instant::now();
+        }
+        Rpc::LeaderAnnounce { leader_id } => {
+            let mut node = me.lock().await;
+            node.current_leader = Some(leader_id);
         }
         _ => {}
     }
