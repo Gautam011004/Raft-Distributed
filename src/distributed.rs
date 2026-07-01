@@ -25,6 +25,7 @@ pub async fn request_reader(
         if n == 0 {
             break;
         }
+        
         if let Some(s) = buf.iter().position(|x| *x == b'\n') {
             vote_caster(&mut buf, s, me.clone(), heartbeat_guard.clone(), &mut conn).await;
         }

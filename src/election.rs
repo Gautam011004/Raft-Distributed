@@ -3,7 +3,7 @@ use std::{sync::Arc};
 use bytes::BytesMut;
 use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream, sync::Mutex};
 
-use crate::types::{Role::{self, Candidate}, Rpc, ThisNode};
+use crate::{connection::send_msg, types::{Peer, Role::{self, Candidate}, Rpc, ThisNode}};
 
 pub async fn election(me: Arc<Mutex<ThisNode>>) {
     println!("Starting election");
@@ -16,30 +16,27 @@ pub async fn election(me: Arc<Mutex<ThisNode>>) {
         term: me_guard.current_term,
         candidate_id: me_guard.id,
     };
-    for i in me_guard.peers.iter() {
-        if i.id == me_guard.id || i.conn.is_none() {
+    let my_id = me_guard.id;
+    for mut i in me_guard.peers.iter_mut() {
+        if i.id == my_id|| i.conn.is_none() {
             continue;
         }
-        send_request(&i.addr, &vote, &mut buf).await;
+        send_request(&mut i, &vote, &mut buf).await;
         check_vote(&mut buf, &mut total_votes).await;
         println!("{}", total_votes);
         if total_votes >= 2 {
-            announce_leadership(me.clone()).await;
+            announce_leadership(&mut me_guard.peers, my_id).await;
             break;
         }
     }
     me_guard.role = Role::Leader;
 }
 
-pub async fn send_request(address: &String, vote: &Rpc, buf: &mut BytesMut) {
-    let mut connection = TcpStream::connect(address).await.unwrap();
-    let mut bytes = serde_json::to_vec(vote).unwrap();
-    bytes.push(b'\n');
-    println!("{}", String::from_utf8(bytes.to_vec()).unwrap());
-    let _ = connection.write_all(&bytes).await;
-    println!("Wrote to {}", address);
+pub async fn send_request(mut peer: &mut Peer, vote: &Rpc, buf: &mut BytesMut) {
+    let msg = serde_json::to_vec(vote).unwrap();
+    send_msg(msg, &mut peer ).await;
     loop {
-        let _ = connection.read_buf(buf).await;
+        let _ = peer.conn.as_mut().unwrap().read_buf(buf).await;
         if let Some(_) = buf.iter().position(|x| *x == b'\n') {
             return;
         }
@@ -60,17 +57,12 @@ pub async fn check_vote(buf: &mut BytesMut, total_votes: &mut u64) {
     }
 }
 
-pub async fn announce_leadership(me: Arc<Mutex<ThisNode>>) {
-    let mut node = me.lock().await;
-    node.current_leader = Some(node.id);
-    let my_id = node.id;
-    let msg = serde_json::to_vec(&Rpc::LeaderAnnounce { leader_id: my_id }).unwrap();
-    for i in node.peers.iter_mut() {
-        if i.id == my_id || i.conn.is_none() {
+pub async fn announce_leadership(peers: &mut Vec<Peer>, id: u64) {
+    let msg = serde_json::to_vec(&Rpc::LeaderAnnounce { leader_id: id }).unwrap();
+    for i in peers.iter_mut() {
+        if i.id == id || i.conn.is_none() {
             continue;
         };
-        if let Some(conn) = &mut i.conn {
-            let _ = conn.write_all(&msg).await;
-        }
+        send_msg(msg.clone(), i).await;
     }
 }

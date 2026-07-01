@@ -8,7 +8,7 @@ use tokio::{
 };
 
 use crate::{
-    connection::{connect_to_peers, handle_connection, retry_conn}, election::election, types::{
+    connection::{connect_to_peers, handle_connection, retry_conn, send_msg}, election::election, types::{
         Peer,
         Role::{self, Follower},
         Rpc, ThisNode,
@@ -44,7 +44,7 @@ async fn main() {
 
     let me = Arc::new(Mutex::new(ThisNode {
         current_term: 0,
-        id: 3,
+        id: 2,
         role: Follower,
         peers: peers,
         last_heartbeat: Instant::now(),
@@ -90,15 +90,14 @@ pub async fn send_heartbeat(me: Arc<Mutex<ThisNode>>) {
         term: node.current_term,
         leader_id: leader_id,
     };
-    let mut bytes = serde_json::to_vec(&msg).unwrap();
-    bytes.push(b'\n');
+    let bytes = serde_json::to_vec(&msg).unwrap();
     if node.role == Role::Leader {
         for i in node.peers.iter_mut() {
-            if i.id == leader_id || i.conn.is_none() {
+            if i.id == leader_id || i.conn.is_none()  {
                 continue;
             }
-            println!("Writin to {}, - {:?}", i.addr, String::from_utf8(bytes.to_vec()).unwrap());
-            let _ = i.conn.as_mut().unwrap().write_all(&bytes).await.unwrap();
+            println!("Writin to {}", i.addr);
+            send_msg(bytes.clone(), i).await;
             sleep(Duration::from_secs(1)).await;
         }
     }
